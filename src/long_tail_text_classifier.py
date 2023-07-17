@@ -60,9 +60,12 @@ class LongTailTextClassifier(BaseEstimator, ClassifierMixin):
     @classmethod
     def merge_chunks(cls, groups_list):
         output = defaultdict(set)
-        for groups in groups_list:
-            for k, v in groups.items():
-                output[k].update(v)
+        with tqdm(groups_list) as bar:
+            for groups in groups_list:
+                for k, v in groups.items():
+                    output[k].update(v)
+                bar.update()
+
         return output
 
     def predict(self, X):
