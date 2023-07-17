@@ -24,11 +24,12 @@ class LongTailTextClassifier(BaseEstimator, ClassifierMixin):
     we first create a separate ditionary for every "chunk_size" entries and then merge these in the end.
     """
 
-    def __init__(self, min_ngram_length=5, max_ngram_length=50, hash_size=10e8, chunk_size=1000):
+    def __init__(self, min_ngram_length=5, max_ngram_length=50, ngram_step=1, hash_size=10e8, chunk_size=1000):
         self.min_ngram_length = min_ngram_length
         self.max_ngram_length = max_ngram_length
         self.hash_size = int(hash_size)
         self.chunk_size = chunk_size
+        self.ngram_step = ngram_step
 
     def fit(self, X, y):
         self._check_X_y(X, y)
@@ -108,7 +109,7 @@ class LongTailTextClassifier(BaseEstimator, ClassifierMixin):
         
         return {
             _custom_hash(text[i:i+n])
-            for n in range(self.min_ngram_length, self.max_ngram_length)
+            for n in range(self.min_ngram_length, self.max_ngram_length, self.ngram_step)
             for i in range(len(text)-n+1)
         }
             
