@@ -45,7 +45,8 @@ class LongTailTextClassifier(BaseEstimator, ClassifierMixin):
             )
 
         self.groups_ = self.merge_chunks(groups_list)
-
+        # TODO: The same pruning as described in fit_chunk could be done here as well to speed up 
+        # inference.
         self.n_features_in_ = 1  # As required to follow scikit-learn API
         self.classes_ = unique_labels(y)
         return self
@@ -55,10 +56,19 @@ class LongTailTextClassifier(BaseEstimator, ClassifierMixin):
         for text, label in zip(X.flatten(), y):
             hashed_set = self._string_to_hash_set(text)
             groups[label].update(hashed_set)        
+
+        # TODO: We could add a pruning step that, for every group, subtracts the entries that are 
+        # common to all of the labels. We would have to check the numbers to see by how much this 
+        # reduces the sizes of the resulting sets, and how much time this operation would take. 
+        # But since the merging seems to be the bottleneck, we want to make the set of hashed values
+        # as small as possible. 
         return groups
 
     @classmethod
     def merge_chunks(cls, groups_list):
+        # TODO: this merge would probably be more efficient if instead of merging 
+        # A, then B, then C, then D, we were to first merge A&B and C&D, and only then
+        # merge the two
         output = defaultdict(set)
         with tqdm(groups_list) as bar:
             for groups in groups_list:
