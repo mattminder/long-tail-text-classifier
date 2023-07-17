@@ -2,6 +2,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from collections import defaultdict
 from sklearn.utils.validation import check_consistent_length, check_is_fitted, check_array
 from sklearn.utils.multiclass import unique_labels
+from tqdm.auto import tqdm
 
 import numpy as np
 
@@ -18,46 +19,86 @@ class LongTailTextClassifier(BaseEstimator, ClassifierMixin):
     During predict: 
     Take some text, calculate the set of its hashed n-grams, and calculate the size of its intersection with 
     the "learned" topic-specific sets. We assign the query text to the topic with the largest intersection.
+
+    Chunk size: Since updating the dictionary from label to hash set gets increasingly expensive as the hash set grows,
+    we first create a separate ditionary for every "chunk_size" entries and then merge these in the end.
     """
 
-    def __init__(self, min_ngram_length=5, max_ngram_length=50, hash_size=10e8, verbose=False):
+    def __init__(self, min_ngram_length=5, max_ngram_length=50, hash_size=10e8, chunk_size=1000):
         self.min_ngram_length = min_ngram_length
         self.max_ngram_length = max_ngram_length
         self.hash_size = int(hash_size)
-        self.verbose = verbose
+        self.chunk_size = chunk_size
 
     def fit(self, X, y):
         self._check_X_y(X, y)
-        encoded = self._hash_encode(X)
-        self._print_if_verbose("Done with the encoding")
-        self.groups_ = self._group_by_y(encoded, y)
-        self._print_if_verbose("Done with training")
-        self.classes_ = unique_labels(y)
+        n_obs = len(X)
+
+        # This factorization into chunks would also allow for easy parallelization
+        groups_list = []
+        for chunk_start in tqdm(range(0, n_obs, self.chunk_size)):
+            chunk_end = min(chunk_start + self.chunk_size, n_obs)
+            chunk_X = X[chunk_start:chunk_end]
+            chunk_y = y[chunk_start:chunk_end]
+            groups_list.append(
+                self.fit_chunk(chunk_X, chunk_y)
+            )
+
+        self.groups_ = self.merge_chunks(groups_list)
 
         self.n_features_in_ = 1  # As required to follow scikit-learn API
+        self.classes_ = unique_labels(y)
         return self
     
-    def _print_if_verbose(self, what):
-        if self.verbose:
-            print(what)
+    def fit_chunk(self, X, y):
+        groups = defaultdict(set)
+        for text, label in zip(X.flatten(), y):
+            hashed_set = self._string_to_hash_set(text)
+            groups[label].update(hashed_set)        
+        return groups
+
+    @classmethod
+    def merge_chunks(cls, groups_list):
+        output = defaultdict(set)
+        for groups in groups_list:
+            for k, v in groups.items():
+                output[k].update(v)
+        return output
 
     def predict(self, X):
         self._check_X(X)
         check_is_fitted(self)
-        return self._predict(X)
 
-    def _predict(self, X):
-        encoded = self._hash_encode(X)
-        return [
-            self._predict_single(query_encoded) for query_encoded in encoded
-        ]
+        def inner(text, pbar):
+            result = self._predict_single(text)
+            pbar.update(1)
+            return result
 
-    def _predict_single(self, query_encoded):
+        # Display the predicting as a progress bar
+        with tqdm(total=len(X)) as pbar:
+            return [
+                inner(text, pbar) for text in X.flatten()
+            ]
+
+    def _predict_single(self, text):
+        encoded = self._string_to_hash_set(text)
         similarity = {
-            label: len(query_encoded[0].intersection(group_encoded)) for label, group_encoded in self.groups_.items()
+            label: len(encoded.intersection(group_encoded)) for label, group_encoded in self.groups_.items()
         }
         return max(similarity, key=lambda x: similarity[x])
 
+    def _string_to_hash_set(self, text):
+        """Returns a function that converts a string to a set of its hashed n-grams."""
+
+        def _custom_hash(ngram):
+            return hash(ngram) % int(self.hash_size)
+        
+        return {
+            _custom_hash(text[i:i+n])
+            for n in range(self.min_ngram_length, self.max_ngram_length)
+            for i in range(len(text)-n+1)
+        }
+            
     def _check_X_y(self, X, y):
         self._check_X(X)
         check_consistent_length(X, y)
@@ -71,34 +112,3 @@ class LongTailTextClassifier(BaseEstimator, ClassifierMixin):
         _, n_features = X.shape
         if n_features > 1:
             raise ValueError("Only a single string feature is supported at this time.")
-
-    def _hash_encode(self, X):
-        vectorized_string_to_ngrams = np.vectorize(self._string_to_ngrams_callable())
-        return vectorized_string_to_ngrams(X)
-
-    def _custom_hash(self, ngram):
-        """Hashs the input ngram to an integer i such that 0 <= i < hash_size."""
-        return hash(ngram) % int(self.hash_size)
-
-    def _string_to_ngrams_callable(self):
-        """Returns a function that converts a string to a set of its hashed n-grams."""
-
-        def _custom_hash(ngram):
-            return hash(ngram) % int(self.hash_size)
-        
-        def callable(text):
-            return {
-                _custom_hash(text[i:i+n]) 
-                for n in range(self.min_ngram_length, self.max_ngram_length)
-                for i in range(len(text)-n+1)
-            }
-        
-        return callable
-    
-    def _group_by_y(self, encoded, y):
-        """Groups the encodigns by y and aggregates with the union operation."""
-        groups = defaultdict(set)
-
-        for (some_encoded, some_y) in zip(encoded.flatten(), y):
-            groups[some_y].update(some_encoded)
-        return groups
